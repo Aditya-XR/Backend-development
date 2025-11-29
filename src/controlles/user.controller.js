@@ -37,7 +37,7 @@ const registerUser = asyncHandler(async (req, res) => {
 
     //files are locally stored in req.files by multer middleware
     const avatarLocalPath = req.files?.avatar[0]?.path;
-    console.log(req.files);
+    //console.log("console log req.file from userController: ", req.files);
     //👇this line will cause an error if user doesn't upload a cover image
    // const coverImageLocalPath = req.files?.coverImages[0]?.path;
 
@@ -90,4 +90,36 @@ const registerUser = asyncHandler(async (req, res) => {
 
 })
 
-export { registerUser };
+const loginUser = asyncHandler(async (req, res) => {
+    //login user logic here
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+
+    if(!user){
+        throw new ApiError(404, "User not found");
+    }
+
+    if(!user.isPasswordCorrect(password)){
+        throw new ApiError(401, "Invalid credentials");
+    }
+
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    const cookieOptions = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        maxAge: 7 * 24 * 60 * 60 * 1000 //7 days
+    };
+
+    res.status(200).cookie("refreshToken", refreshToken, cookieOptions).json(
+        new ApiResponse(200, {
+            accessToken
+        }, "User logged in successfully")
+    );
+});
+
+
+export { registerUser, loginUser };
