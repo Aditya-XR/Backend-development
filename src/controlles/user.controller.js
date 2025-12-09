@@ -4,6 +4,23 @@ import {User} from "../models/user.models.js";
 import {uploadOnCloudinary} from "../utils/cloudinary.js";
 import {ApiResponse} from "../utils/ApiResponse.js";
 
+
+const generateAccessAndRefreshToken = async(userId) =>{
+    try{
+        const user = await User.findById(userId);
+        const accessToken = user.generateAccessToken();
+        const refreshToken = user.generateRefreshAccessToken();
+
+        //storing refresh token in db
+        user.refreshToken = refreshToken;
+        await user.save({validateBeforeSave: false});
+        return {accessToken, refreshToken};
+
+    }catch(error){
+        throw new ApiError(500, "Error generating Access and refresh tokens");
+    }
+}
+
 const registerUser = asyncHandler(async (req, res) => {
     //get user data from req.body/frontend
     //validate user data
@@ -17,7 +34,7 @@ const registerUser = asyncHandler(async (req, res) => {
     //return response email
 
     const {userName, email, fullName, password} = req.body;
-    //console.log("email:", email);
+    //console.log("req.body in registerUser: ", req.body);
 
     if(
         [userName, email, fullName, password].some((field) =>
@@ -36,7 +53,7 @@ const registerUser = asyncHandler(async (req, res) => {
     }
 
     //files are locally stored in req.files by multer middleware
-    const avatarLocalPath = req.files?.avatar[0]?.path;
+    const avatarLocalPath = req.files?.avatar?.[0]?.path;
     //console.log("console log req.file from userController: ", req.files);
     //👇this line will cause an error if user doesn't upload a cover image
    // const coverImageLocalPath = req.files?.coverImages[0]?.path;
@@ -64,6 +81,7 @@ const registerUser = asyncHandler(async (req, res) => {
         throw new ApiError(500, "Error in uploading avatar image, please try again");
     } 
 
+    //console.log("password before creating user: ", password);
     //create user entry in db
     const user = await User.create({
         fullName,
@@ -73,6 +91,8 @@ const registerUser = asyncHandler(async (req, res) => {
         password,                             // will be hashed by pre-save hook
         userName: userName.toLowerCase()
 });
+
+    //console.log("Newly created user: ", user);
 
     //confirming user creation
     const createduser = await User.findById(user._id).select(
@@ -91,35 +111,83 @@ const registerUser = asyncHandler(async (req, res) => {
 })
 
 const loginUser = asyncHandler(async (req, res) => {
-    //login user logic here
-    const { email, password } = req.body;
+    const {email, userName, password} = req.body;
+    if(!email && !userName) {
+        throw new ApiError(400, "Email or Username is required to login");
+    }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({
+        $or: [{email}, {userName}]
+    })
 
     if(!user){
-        throw new ApiError(404, "User not found");
+        throw new ApiError(404, "User not found, please register");
     }
+   // console.log("User found during login: ", user);
+    //console.log("Password received during login: ", password);
+    const isPasswordValid = await user.isPasswordCorrect(password);
 
-    if(!user.isPasswordCorrect(password)){
-        throw new ApiError(401, "Invalid credentials");
+    if(!isPasswordValid){
+        throw new ApiError(401, "Plaease check your password and try again");
     }
+    console.log("User authenticated successfully: ", user._id);
+    const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user._id);
 
-    const accessToken = user.generateAccessToken();
-    const refreshToken = user.generateRefreshToken();
-
-    const cookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-        maxAge: 7 * 24 * 60 * 60 * 1000 //7 days
-    };
-
-    res.status(200).cookie("refreshToken", refreshToken, cookieOptions).json(
-        new ApiResponse(200, {
-            accessToken
-        }, "User logged in successfully")
+    const loggedInUser = await User.findById(user._id).select(
+        "-password -refreshToken"
     );
+   // console.log("Logged in user data to be sent: ", loggedInUser);
+
+    const options = {//cookie options -> only server can modify httpOnly
+        httpOnly: true,
+        secure: true
+    }
+
+    return res
+        .status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", refreshToken, options)
+        .json(
+            new ApiResponse(200,
+                 {
+                    user: loggedInUser, accessToken, refreshToken
+                 },
+                "User logged in successfully"
+            )
+        );
+
+});
+
+const logoutUser = asyncHandler(async (req, res) => {
+    await User.findByIdAndUpdate(
+        req.user._id,
+        {
+            $set: {
+                 refreshToken: undefined 
+            }
+
+        },
+        {
+            new: true
+        }
+    )
+
+    const options = {//cookie options -> only server can modify httpOnly
+        httpOnly: true,
+        secure: true
+    }
+    return res
+        .status(200)
+        .clearCookie("accessToken", options)
+        .clearCookie("refreshToken", options)
+        .json(
+            new ApiResponse(200, null, "User logged out successfully")
+        );
 });
 
 
-export { registerUser, loginUser };
+export {
+    registerUser,
+    loginUser,
+    logoutUser
+};
